@@ -268,9 +268,11 @@ def health():
         'assets': ASSETS
     }
 
+
 def run_web_server():
     """تشغيل خادم الويب للـ health checks"""
     port = int(os.environ.get('PORT', 5000))
+    print(f"🌐 خادم الويب يعمل على port {port}")
     app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 def main():
@@ -421,6 +423,7 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
 
 
