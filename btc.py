@@ -9,13 +9,8 @@ import pytz
 import os
 import logging
 
-# إعداد logging للتحقق من عمل البرنامج
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# التحقق من أننا على Render
-ON_RENDER = os.environ.get('RENDER', False)
-
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', "8134471132:AAEdQo6TaKSEhB7BBmZ-Kl4K7IYookjNe0s")
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', "1467259305")
 
 
 # تعريف الأصول التي تتابعها
@@ -44,6 +39,14 @@ SELL_TIMES = [
     {"days": ["saturday"], "start": "21:00"},
     {"days": ["tuesday", "wednesday", "thursday"], "start": "08:00"}
 ]
+
+# إعداد logging للتحقق من عمل البرنامج
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# التحقق من أننا على Render
+ON_RENDER = os.environ.get('RENDER', False)
+
 
 def send_telegram_message(message):
     """إرسال رسالة عبر Telegram مع معالجة الأخطاء"""
@@ -285,3 +288,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
