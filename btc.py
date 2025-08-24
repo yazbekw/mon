@@ -368,133 +368,42 @@ def graceful_shutdown(signum, frame):
     exit(0)
 
 def main():
-    """الدالة الرئيسية المحدثة مع سجلات متقدمة ومراقبة"""
     global start_time, successful_cycles, error_count
     
     try:
-        # تسجيل بدء التشغيل
+        # بدء التشغيل فوراً
         start_time = datetime.now(DAMASCUS_TZ)
+        print("=" * 60)
+        print("🚀 بدء تشغيل البوت على Render")
+        print("=" * 60)
         
-        # تسجيل إشارات الإغلاق
-        signal.signal(signal.SIGTERM, graceful_shutdown)
-        signal.signal(signal.SIGINT, graceful_shutdown)
+        # اختبار بسيط للمتغيرات
+        if not TELEGRAM_BOT_TOKEN:
+            print("❌ TELEGRAM_BOT_TOKEN غير موجود")
+            return
+        if not TELEGRAM_CHAT_ID:
+            print("❌ TELEGRAM_CHAT_ID غير موجود")
+            return
         
-        # بدء خادم الويب في thread منفصل
-        web_thread = threading.Thread(target=run_web_server, daemon=True)
-        web_thread.start()
+        # إرسال رسالة اختبار بسيطة
+        test_msg = "🔍 اختبار اتصال من Render"
+        success = send_telegram_message(test_msg)
         
-        logger.info("=" * 60)
-        logger.info("🚀 بدء تشغيل نظام التداول المتقدم على Render")
-        logger.info(f"⏰ وقت البدء: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info(f"🌐 نوع التشغيل: {'Render' if ON_RENDER else 'Local'}")
-        logger.info("=" * 60)
-        
-        # إرسال إشعار بدء التشغيل
-        startup_msg = f"""🚀 <b>بدء تشغيل نظام التداول</b>
+        if success:
+            print("✅ تم إرسال الرسالة بنجاح")
+            # إرسال رسالة البدء الكاملة
+            startup_msg = f"""🚀 <b>بدء تشغيل النظام</b>
 ⏰ الوقت: {start_time.strftime('%Y-%m-%d %H:%M:%S')}
-🌐 البيئة: {'Render' if ON_RENDER else 'محلي'}
-📊 الأصول: {len(ASSETS)} عملة
-✅ الحالة: تم التفعيل بنجاح"""
-
-        send_telegram_message(startup_msg)
-        
-        # اختبار اتصال Telegram
-        logger.info("📡 اختبار اتصال Telegram...")
-        test_msg = send_telegram_message("🔍 <b>اختبار اتصال - النظام يعمل</b>")
-        
-        if test_msg:
-            logger.info("✅ اتصال Telegram ناجح!")
+✅ الحالة: يعمل بنجاح"""
+            send_telegram_message(startup_msg)
         else:
-            logger.warning("⚠️ تحذير: هناك مشكلة في اتصال Telegram")
-        
-        # جدولة الإشعارات
-        logger.info("📅 جاري جدولة المهام...")
-        schedule_notifications()
-        
-        # عرض المهام المجدولة
-        logger.info("\n📋 المهام المجدولة:")
-        for job in schedule.jobs:
-            logger.info(f"   ⏰ {job.next_run.strftime('%Y-%m-%d %H:%M')} - {job}")
-        
-        # إرسال تقرير الجدولة
-        schedule_report = f"""📅 <b>تقرير الجدولة</b>
-🛒 أوقات الشراء: {len(BUY_TIMES)} فترة
-💰 أوقات البيع: {len(SELL_TIMES)} فترة
-📊 التقرير اليومي: 20:00 يومياً
-✅ تم جدولة جميع المهام"""
-
-        send_telegram_message(schedule_report)
-        
-        logger.info("\n" + "=" * 60)
-        logger.info("🎯 النظام يعمل بنجاح! الإشعارات مجدولة")
-        logger.info("⏰ سيتم إرسال الإشعارات تلقائياً حسب الأوقات المحددة")
-        logger.info("=" * 60 + "\n")
-        
-        # إرسال رسالة تأكيد التشغيل
-        send_telegram_message("✅ <b>النظام يعمل بشكل طبيعي وجاهز للإشعارات</b>")
-        
-        # الحلقة الرئيسية مع مراقبة متقدمة
-        while True:
-            try:
-                current_time = datetime.now(DAMASCUS_TZ)
-                
-                # تشغيل المهام المجدولة
-                schedule.run_pending()
-                
-                # إرسال نبضة حياة كل ساعة (للمراقبة فقط)
-                if current_time.minute == 0 and current_time.second == 0:
-                    uptime_minutes = (time.time() - system_uptime) / 60
-                    status_msg = f"""❤️ <b>نبضة حياة - النظام يعمل</b>
-⏰ الوقت: {current_time.strftime('%H:%M:%S')}
-🔄 وقت التشغيل: {uptime_minutes:.1f} دقيقة
-✅ الدورات الناجحة: {successful_cycles}
-❌ الأخطاء: {error_count}
-📊 الحالة: ممتازة"""
-
-                    if ON_RENDER:  # إرسال النبضات فقط على Render
-                        send_telegram_message(status_msg)
-                
-                successful_cycles += 1
-                
-                # تقليل استهلاك الموارد على Render
-                time.sleep(30)  # انتظار 30 ثانية بين الدورات
-                
-            except Exception as e:
-                error_count += 1
-                error_time = datetime.now(DAMASCUS_TZ)
-                
-                logger.error(f"❌ خطأ في الدورة الرئيسية: {e}")
-                logger.error(f"⏰ وقت الخطأ: {error_time.strftime('%Y-%m-%d %H:%M:%S')}")
-                
-                # إرسال إشعار خطأ فقط إذا كانت الأخطاء متتالية
-                if error_count % 5 == 0:
-                    error_msg = f"""⚠️ <b>تحذير: أخطاء متعددة</b>
-⏰ الوقت: {error_time.strftime('%H:%M:%S')}
-❌ عدد الأخطاء: {error_count}
-📋 آخر خطأ: {str(e)[:100]}...
-🔄 النظام يستمر في المحاولة"""
-
-                    send_telegram_message(error_msg)
-                
-                # انتظار أطول بين المحاولات عند الأخطاء
-                time.sleep(60)
-                
+            print("❌ فشل إرسال الرسالة")
+            
     except Exception as e:
-        # خطأ فادح في بدء التشغيل
-        crash_time = datetime.now(DAMASCUS_TZ)
-        crash_msg = f"""💥 <b>خطأ فادح في النظام</b>
-⏰ الوقت: {crash_time.strftime('%Y-%m-%d %H:%M:%S')}
-📋 الخطأ: {str(e)}
-❌ النظام توقف"""
-
-        send_telegram_message(crash_msg)
-        logger.error(f"💥 خطأ فادح: {e}")
+        print(f"💥 خطأ في التشغيل: {e}")
         
-        if ON_RENDER:
-            # على Render، نعيد المحاولة بعد 5 دقائق
-            logger.info("🔄 إعادة المحاولة بعد 5 دقائق...")
-            time.sleep(300)
-            main()
+
 
 if __name__ == "__main__":
     main()
+
