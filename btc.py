@@ -11,8 +11,8 @@ import logging
 from flask import Flask
 import threading
 
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', "8134471132:AAEdQo6TaKSEhB7BBmZ-Kl4K7IYookjNe0s")
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', "1467259305")
+TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
+TELEGRAM_CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 
 
 # تعريف الأصول التي تتابعها
@@ -423,6 +423,7 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
 
 
