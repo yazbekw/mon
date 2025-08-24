@@ -9,17 +9,21 @@ import os
 import logging
 from flask import Flask
 import threading
+import signal
 
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', "8134471132:AAEdQo6TaKSEhB7BBmZ-Kl4K7IYookjNe0s")
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', "1467259305")
-
+# ========== إعدادات الثوابت ==========
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', "YOUR_BOT_TOKEN_HERE")
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', "YOUR_CHAT_ID_HERE")
 
 # تعريف الأصول التي تتابعها
 ASSETS = ["BTC-USD", "ETH-USD", "BNB-USD", "XRP-USD", "ADA-USD"]
 
-
 # تحديد توقيت دمشق
 DAMASCUS_TZ = pytz.timezone('Asia/Damascus')
+
+# إعدادات التوقيت
+NOTIFICATION_COOLDOWN = 5  # 5 ثواني بين كل إشعارين
+MAX_INACTIVITY = 3600  # 1 ساعة كحد أقصى للخمول
 
 # ========== أوقات الشراء المثلى ==========
 BUY_TIMES = [
@@ -41,14 +45,24 @@ SELL_TIMES = [
     {"days": ["tuesday", "wednesday", "thursday"], "start": "08:00"}
 ]
 
-# إعداد logging للتحقق من عمل البرنامج
-logging.basicConfig(level=logging.INFO)
+# إعداد logging متقدم
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('bot.log', encoding='utf-8')
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # التحقق من أننا على Render
 ON_RENDER = os.environ.get('RENDER', False)
 
+# إنشاء تطبيق Flask
+app = Flask(__name__)
 
+# ========== الدوال المساعدة ==========
 def send_telegram_message(message):
     """إرسال رسالة عبر Telegram مع معالجة الأخطاء"""
     # تقليل طول الرسالة إذا كانت طويلة جداً
@@ -65,14 +79,37 @@ def send_telegram_message(message):
     try:
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 200:
-            print("✅ تم إرسال الإشعار إلى Telegram")
+            logger.info("✅ تم إرسال الإشعار إلى Telegram")
+            # إضافة تأخير بين الرسائل
+            time.sleep(NOTIFICATION_COOLDOWN)
             return True
         else:
-            print(f"❌ خطأ في إرسال الرسالة: {response.status_code}")
-            print(f"📋 تفاصيل الخطأ: {response.text}")
+            logger.error(f"❌ خطأ في إرسال الرسالة: {response.status_code}")
+            logger.error(f"📋 تفاصيل الخطأ: {response.text}")
             return False
     except Exception as e:
-        print(f"❌ خطأ في الاتصال: {e}")
+        logger.error(f"❌ خطأ في الاتصال: {e}")
+        return False
+
+def verify_telegram_connection():
+    """التحقق من اتصال وصحة توكن Telegram"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe"
+    
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("ok"):
+                logger.info("✅ التوكن صالح - البوت: @" + data["result"]["username"])
+                return True
+            else:
+                logger.error("❌ التوكن غير صالح")
+                return False
+        else:
+            logger.error(f"❌ خطأ في التحقق: {response.status_code}")
+            return False
+    except Exception as e:
+        logger.error(f"❌ خطأ في الاتصال: {e}")
         return False
 
 def calculate_rsi(prices, period=14):
@@ -116,7 +153,7 @@ def get_market_data(symbol):
         hist = stock.history(period="1mo", interval="1d")
         
         if len(hist) < 15:
-            print(f"⚠️ بيانات غير كافية لـ {symbol}")
+            logger.warning(f"⚠️ بيانات غير كافية لـ {symbol}")
             return None, None, None
             
         current_price = hist['Close'].iloc[-1]
@@ -130,7 +167,7 @@ def get_market_data(symbol):
         return current_price, current_rsi, price_change
         
     except Exception as e:
-        print(f"❌ خطأ في جلب بيانات {symbol}: {e}")
+        logger.error(f"❌ خطأ في جلب بيانات {symbol}: {e}")
         return None, None, None
 
 def get_rsi_recommendation(rsi, is_buy_time):
@@ -194,7 +231,7 @@ def check_trading_opportunity(is_buy_time):
         else:
             send_telegram_message(message)
     else:
-        print("⚠️ لا توجد بيانات متاحة للتحليل")
+        logger.warning("⚠️ لا توجد بيانات متاحة للتحليل")
         send_telegram_message("⚠️ <b>لا توجد بيانات متاحة للتحليل حالياً</b>")
 
 def send_daily_report():
@@ -227,6 +264,93 @@ def send_daily_report():
     else:
         send_telegram_message("⚠️ <b>لا توجد بيانات للتقرير اليومي</b>")
 
+def send_final_prices():
+    """إرسال الأسعار النهائية عند توقف البوت"""
+    current_time = datetime.now(DAMASCUS_TZ).strftime("%Y-%m-%d %H:%M")
+    
+    message = f"🛑 <b>إشعار توقف البوت - الأسعار النهائية</b>\n"
+    message += f"⏰ <i>{current_time}</i>\n"
+    message += "─" * 40 + "\n\n"
+    
+    assets_analyzed = 0
+    
+    for symbol in ASSETS:
+        data = get_market_data(symbol)
+        if all(x is not None for x in data):
+            price, rsi, change = data
+            assets_analyzed += 1
+            
+            change_emoji = "📈" if change >= 0 else "📉"
+            change_sign = "+" if change >= 0 else ""
+            
+            message += f"💰 <b>{symbol}</b>\n"
+            message += f"   السعر: ${price:,.2f} {change_emoji} {change_sign}{change:.2f}%\n"
+            message += f"   RSI: {rsi:.1f}\n"
+            message += "─" * 20 + "\n"
+    
+    if assets_analyzed > 0:
+        message += f"\n📋 <i>تم تحليل {assets_analyzed} أصل</i>"
+        send_telegram_message(message)
+    else:
+        send_telegram_message("⚠️ <b>لا توجد بيانات متاحة لإرسال الأسعار النهائية</b>")
+
+def check_bot_status():
+    """التحقق من حالة البوت وإرسال تقرير"""
+    current_time = datetime.now(DAMASCUS_TZ)
+    status_message = f"""🤖 <b>تقرير حالة البوت</b>
+⏰ الوقت: {current_time.strftime('%Y-%m-%d %H:%M:%S')}
+📊 الحالة: يعمل بشكل طبيعي
+🔗 Render: {'نعم' if ON_RENDER else 'لا'}
+📡 اتصال Telegram: جاري الاختبار..."""
+
+    # اختبار إرسال رسالة
+    test_result = send_telegram_message("🔍 <b>اختبار اتصال - البوت يعمل</b>")
+    
+    if test_result:
+        status_message += "\n✅ اتصال Telegram: نشط"
+    else:
+        status_message += "\n❌ اتصال Telegram: فشل في الإرسال"
+    
+    # إضافة معلومات إضافية
+    status_message += f"\n📋 الأصول: {len(ASSETS)} عملة"
+    
+    # الحصول على وقت الإشعار التالي
+    next_job = schedule.next_run()
+    if next_job:
+        status_message += f"\n⏰下次 إشعار: {next_job.astimezone(DAMASCUS_TZ).strftime('%Y-%m-%d %H:%M')}"
+    else:
+        status_message += "\n⏰下次 إشعار: لا يوجد"
+    
+    send_telegram_message(status_message)
+
+def monitor_and_recover():
+    """مراقبة النظام واستعادته عند التوقف"""
+    last_active_time = time.time()
+    
+    while True:
+        try:
+            current_time = time.time()
+            
+            # إذا مرت مدة طويلة بدون نشاط
+            if current_time - last_active_time > MAX_INACTIVITY:
+                error_msg = f"""⚠️ <b>تحذير: البوت غير نشط</b>
+⏰ آخر نشاط: {datetime.fromtimestamp(last_active_time).strftime('%Y-%m-%d %H:%M:%S')}
+🔄 جاري إعادة التشغيل التلقائي..."""
+                
+                send_telegram_message(error_msg)
+                # إعادة تشغيل المهام
+                schedule.clear()
+                schedule_notifications()
+                last_active_time = current_time
+            
+            # تحديث وقت النشاط عند كل دورة
+            last_active_time = current_time
+            time.sleep(300)  # التحقق كل 5 دقائق
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في المراقبة: {e}")
+            time.sleep(60)
+
 def schedule_notifications():
     """جدولة جميع الإشعارات"""
     
@@ -246,10 +370,11 @@ def schedule_notifications():
 
     # تقرير يومي الساعة 8 مساءً
     schedule.every().day.at("20:00").do(send_daily_report)
+    
+    # تقرير حالة كل 6 ساعات
+    schedule.every(6).hours.do(check_bot_status)
 
-# إنشاء تطبيق Flask
-app = Flask(__name__)
-
+# ========== routes Flask ==========
 @app.route('/')
 def home():
     return '''
@@ -267,26 +392,79 @@ def health():
         'assets': ASSETS
     }
 
+@app.route('/test')
+def test_notification():
+    """مسار لاختبار الإشعارات"""
+    send_telegram_message("🔔 <b>اختبار إشعار</b>\nهذه رسالة اختبار من البوت")
+    check_bot_status()
+    return "تم إرسال اختبار الإشعار"
+
+@app.route('/prices')
+def get_current_prices():
+    """الحصول على الأسعار الحالية"""
+    message = "📊 <b>الأسعار الحالية</b>\n\n"
+    for symbol in ASSETS:
+        data = get_market_data(symbol)
+        if all(x is not None for x in data):
+            price, rsi, change = data
+            change_emoji = "📈" if change >= 0 else "📉"
+            change_sign = "+" if change >= 0 else ""
+            message += f"• {symbol}: ${price:,.2f} {change_emoji} {change_sign}{change:.2f}%\n"
+    
+    send_telegram_message(message)
+    return "تم إرسال الأسعار الحالية"
+
+# ========== معالجة الإشارات ==========
+def signal_handler(sig, frame):
+    """معالجة إشارات النظام للتوقف"""
+    print('🛑 تم استقبال إشارة توقف...')
+    send_final_prices()
+    
+    # إرسال رسالة توقف
+    stop_time = datetime.now(DAMASCUS_TZ)
+    shutdown_msg = f"""⏹️ <b>إيقاف النظام</b>
+⏰ وقت الإيقاف: {stop_time.strftime('%Y-%m-%d %H:%M:%S')}
+🛑 السبب: إشارة نظام"""
+    send_telegram_message(shutdown_msg)
+    
+    exit(0)
+
+# تسجيل معالج الإشارات
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 def run_web_server():
     """تشغيل خادم الويب للـ health checks"""
     port = int(os.environ.get('PORT', 5000))
-    print(f"🌐 خادم الويب يعمل على port {port}")
+    logger.info(f"🌐 خادم الويب يعمل على port {port}")
     app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 def main():
     """الدالة الرئيسية المحدثة مع سجلات متقدمة ومراقبة"""
     try:
-        # تسجيل بدء التشغيل
+        # بدء خادم الويب في خيط منفصل
         web_thread = threading.Thread(target=run_web_server, daemon=True)
         web_thread.start()
-        print("🌐 خادم الويب يعمل على port 5000")
+        
+        # تسجيل بدء التشغيل
         start_time = datetime.now(DAMASCUS_TZ)
-        print("=" * 60)
-        print("🚀 بدء تشغيل نظام التداول المتقدم على Render")
-        print(f"⏰ وقت البدء: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"🌐 نوع التشغيل: {'Render' if ON_RENDER else 'Local'}")
-        print("=" * 60)
+        logger.info("=" * 60)
+        logger.info("🚀 بدء تشغيل نظام التداول المتقدم على Render")
+        logger.info(f"⏰ وقت البدء: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info(f"🌐 نوع التشغيل: {'Render' if ON_RENDER else 'Local'}")
+        logger.info("=" * 60)
+        
+        # التحقق من صلاحية التوكن
+        logger.info("🔍 التحقق من صلاحية توكن Telegram...")
+        if not verify_telegram_connection():
+            error_msg = """❌ <b>خطأ في توكن Telegram</b>
+⚠️ البوت لا يستطيع الاتصال
+🔍 الرجاء التحقق من:
+1. صحة التوكن
+2. صحة Chat ID
+3. أن البوت ليس محظوراً"""
+            send_telegram_message(error_msg)
+            return
         
         # إرسال إشعار بدء التشغيل
         startup_msg = f"""🚀 <b>بدء تشغيل نظام التداول</b>
@@ -297,40 +475,35 @@ def main():
 
         send_telegram_message(startup_msg)
         
-        # اختبار اتصال Telegram
-        print("📡 اختبار اتصال Telegram...")
-        test_msg = send_telegram_message("🔍 <b>اختبار اتصال - النظام يعمل</b>")
-        
-        if test_msg:
-            print("✅ اتصال Telegram ناجح!")
-        else:
-            print("⚠️ تحذير: هناك مشكلة في اتصال Telegram")
-            if ON_RENDER:
-                print("ℹ️ المتابعة رغم المشكلة للتشغيل المستمر")
-        
         # جدولة الإشعارات
-        print("📅 جاري جدولة المهام...")
+        logger.info("📅 جاري جدولة المهام...")
         schedule_notifications()
         
+        # بدء نظام المراقبة في خيط منفصل
+        monitor_thread = threading.Thread(target=monitor_and_recover, daemon=True)
+        monitor_thread.start()
+        logger.info("✅ نظام المراقبة يعمل")
+        
         # عرض المهام المجدولة
-        print("\n📋 المهام المجدولة:")
+        logger.info("\n📋 المهام المجدولة:")
         for job in schedule.jobs:
-            print(f"   ⏰ {job.next_run.strftime('%Y-%m-%d %H:%M')} - {job}")
+            logger.info(f"   ⏰ {job.next_run.astimezone(DAMASCUS_TZ).strftime('%Y-%m-%d %H:%M')} - {job}")
         
         # إرسال تقرير الجدولة
         schedule_report = f"""📅 <b>تقرير الجدولة</b>
 🛒 أوقات الشراء: {len(BUY_TIMES)} فترة
 💰 أوقات البيع: {len(SELL_TIMES)} فترة
 📊 التقرير اليومي: 20:00 يومياً
+📡 تقرير الحالة: كل 6 ساعات
 ✅ تم جدولة جميع المهام"""
 
         send_telegram_message(schedule_report)
         
-        print("\n" + "=" * 60)
-        print("🎯 النظام يعمل بنجاح! الإشعارات مجدولة")
-        print("⏰ سيتم إرسال الإشعارات تلقائياً حسب الأوقات المحددة")
-        print("📊 لمراقبة السجلات: لوحة تحكم Render → Logs")
-        print("=" * 60 + "\n")
+        logger.info("\n" + "=" * 60)
+        logger.info("🎯 النظام يعمل بنجاح! الإشعارات مجدولة")
+        logger.info("⏰ سيتم إرسال الإشعارات تلقائياً حسب الأوقات المحددة")
+        logger.info("📊 لمراقبة السجلات: لوحة تحكم Render → Logs")
+        logger.info("=" * 60 + "\n")
         
         # إرسال رسالة تأكيد التشغيل
         send_telegram_message("✅ <b>النظام يعمل بشكل طبيعي وجاهز للإشعارات</b>")
@@ -371,6 +544,9 @@ def main():
                 stop_time = datetime.now(DAMASCUS_TZ)
                 runtime = (stop_time - start_time)
                 
+                # إرسال الأسعار النهائية قبل التوقف
+                send_final_prices()
+                
                 shutdown_msg = f"""⏹️ <b>إيقاف النظام يدوياً</b>
 ⏰ وقت البدء: {start_time.strftime('%Y-%m-%d %H:%M')}
 ⏰ وقت الإيقاف: {stop_time.strftime('%Y-%m-%d %H:%M')}
@@ -379,15 +555,15 @@ def main():
 ❌ الأخطاء: {error_count}"""
 
                 send_telegram_message(shutdown_msg)
-                print("\n⏹️ تم إيقاف النظام يدوياً")
+                logger.info("\n⏹️ تم إيقاف النظام يدوياً")
                 break
                 
             except Exception as e:
                 error_count += 1
                 error_time = datetime.now(DAMASCUS_TZ)
                 
-                print(f"❌ خطأ في الدورة الرئيسية: {e}")
-                print(f"⏰ وقت الخطأ: {error_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                logger.error(f"❌ خطأ في الدورة الرئيسية: {e}")
+                logger.error(f"⏰ وقت الخطأ: {error_time.strftime('%Y-%m-%d %H:%M:%S')}")
                 
                 # إرسال إشعار خطأ فقط إذا كانت الأخطاء متتالية
                 if error_count % 5 == 0:
@@ -411,14 +587,13 @@ def main():
 ❌ النظام توقف"""
 
         send_telegram_message(crash_msg)
-        print(f"💥 خطأ فادح: {e}")
+        logger.error(f"💥 خطأ فادح: {e}")
         
         if ON_RENDER:
             # على Render، نعيد المحاولة بعد 5 دقائق
-            print("🔄 إعادة المحاولة بعد 5 دقائق...")
+            logger.info("🔄 إعادة المحاولة بعد 5 دقائق...")
             time.sleep(300)
             main()
 
 if __name__ == "__main__":
-
     main()
