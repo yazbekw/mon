@@ -8,6 +8,8 @@ import requests
 import pytz
 import os
 import logging
+from flask import Flask
+import threading
 
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', "8134471132:AAEdQo6TaKSEhB7BBmZ-Kl4K7IYookjNe0s")
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', "1467259305")
@@ -246,10 +248,38 @@ def schedule_notifications():
     # تقرير يومي الساعة 8 مساءً
     schedule.every().day.at("20:00").do(send_daily_report)
 
+# إنشاء تطبيق Flask
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return '''
+    <h1>✅ Crypto Trading Bot is Running</h1>
+    <p>Service: Active</p>
+    <p>Type: Background Worker + Health Check</p>
+    '''
+
+@app.route('/health')
+def health():
+    return {
+        'status': 'healthy',
+        'service': 'crypto-trading-bot',
+        'timestamp': datetime.now(DAMASCUS_TZ).isoformat(),
+        'assets': ASSETS
+    }
+
+def run_web_server():
+    """تشغيل خادم الويب للـ health checks"""
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
 def main():
     """الدالة الرئيسية المحدثة مع سجلات متقدمة ومراقبة"""
     try:
         # تسجيل بدء التشغيل
+        web_thread = threading.Thread(target=run_web_server, daemon=True)
+        web_thread.start()
+        print("🌐 خادم الويب يعمل على port 5000")
         start_time = datetime.now(DAMASCUS_TZ)
         print("=" * 60)
         print("🚀 بدء تشغيل نظام التداول المتقدم على Render")
@@ -391,5 +421,6 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
 
