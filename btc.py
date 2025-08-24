@@ -11,10 +11,9 @@ from flask import Flask
 import threading
 import signal
 
-
-# إعدادات Telegram - ضع هنا معلومات بوتك
-TELEGRAM_BOT_TOKEN = "8134471132:AAEdQo6TaKSEhB7BBmZ-Kl4K7IYookjNe0s"
-TELEGRAM_CHAT_ID = "1467259305"
+# ========== إعدادات الثوابت ==========
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', "7925838105:AAF5HwcXewyhrtyEi3_EF4r2p_R4Q5iMBfg")
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', "1467259305")
 
 # تعريف الأصول التي تتابعها
 ASSETS = ["BTC-USD", "ETH-USD", "BNB-USD", "XRP-USD", "ADA-USD"]
@@ -60,12 +59,33 @@ logger = logging.getLogger(__name__)
 # التحقق من أننا على Render
 ON_RENDER = os.environ.get('RENDER', False)
 
+# إعدادات خاصة بـ Render
+RENDER_SETTINGS = {
+    "timeout": 20,
+    "retries": 5,
+    "backoff_factor": 1.5
+}
+
+# جلسة HTTP مشتركة
+PERSISTENT_SESSION = None
+
 # إنشاء تطبيق Flask
 app = Flask(__name__)
 
 # ========== الدوال المساعدة ==========
-def send_telegram_message(message):
-    """إرسال رسالة عبر Telegram مع معالجة الأخطاء"""
+def create_persistent_session():
+    """إنشاء جلسة HTTP متواصلة للأداء الأفضل"""
+    session = requests.Session()
+    # إعدادات مثلى للجلسة
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    })
+    return session
+
+def send_telegram_message(message, max_retries=3):
+    """إرسال رسالة عبر Telegram مع معالجة الأخطاء ومحاولات متعددة"""
+    global PERSISTENT_SESSION
+    
     # تقليل طول الرسالة إذا كانت طويلة جداً
     if len(message) > 4000:
         message = message[:4000] + "...\n\n📋 الرسالة طويلة جداً، تم تقصيرها"
@@ -77,27 +97,54 @@ def send_telegram_message(message):
         "parse_mode": "HTML"
     }
     
-    try:
-        response = requests.post(url, json=payload, timeout=10)
-        if response.status_code == 200:
-            logger.info("✅ تم إرسال الإشعار إلى Telegram")
-            # إضافة تأخير بين الرسائل
-            time.sleep(NOTIFICATION_COOLDOWN)
-            return True
-        else:
-            logger.error(f"❌ خطأ في إرسال الرسالة: {response.status_code}")
-            logger.error(f"📋 تفاصيل الخطأ: {response.text}")
-            return False
-    except Exception as e:
-        logger.error(f"❌ خطأ في الاتصال: {e}")
-        return False
+    for attempt in range(max_retries):
+        try:
+            # على Render، نستخدم وقت انتظار أطول
+            timeout = 15 if ON_RENDER else 10
+            
+            if PERSISTENT_SESSION:
+                response = PERSISTENT_SESSION.post(url, json=payload, timeout=timeout)
+            else:
+                response = requests.post(url, json=payload, timeout=timeout)
+            
+            if response.status_code == 200:
+                logger.info("✅ تم إرسال الإشعار إلى Telegram")
+                # إضافة تأخير بين الرسائل
+                time.sleep(NOTIFICATION_COOLDOWN)
+                return True
+            else:
+                logger.warning(f"⚠️ محاولة {attempt + 1}: خطأ {response.status_code}")
+                if attempt < max_retries - 1:
+                    time.sleep(2)  # انتظار قبل المحاولة التالية
+                    
+        except requests.exceptions.Timeout:
+            logger.warning(f"⚠️ محاولة {attempt + 1}: انتهى الوقت")
+            if attempt < max_retries - 1:
+                time.sleep(3)
+        except requests.exceptions.ConnectionError:
+            logger.warning(f"⚠️ محاولة {attempt + 1}: خطأ اتصال")
+            if attempt < max_retries - 1:
+                time.sleep(5)
+        except Exception as e:
+            logger.error(f"❌ محاولة {attempt + 1}: خطأ غير متوقع - {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2)
+    
+    logger.error("❌ فشل جميع محاولات الإرسال")
+    return False
 
 def verify_telegram_connection():
     """التحقق من اتصال وصحة توكن Telegram"""
+    global PERSISTENT_SESSION
+    
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe"
     
     try:
-        response = requests.get(url, timeout=10)
+        if PERSISTENT_SESSION:
+            response = PERSISTENT_SESSION.get(url, timeout=10)
+        else:
+            response = requests.get(url, timeout=10)
+            
         if response.status_code == 200:
             data = response.json()
             if data.get("ok"):
@@ -112,6 +159,74 @@ def verify_telegram_connection():
     except Exception as e:
         logger.error(f"❌ خطأ في الاتصال: {e}")
         return False
+
+def diagnose_connection_issues():
+    """تشخيص مشاكل الاتصال على Render"""
+    global PERSISTENT_SESSION
+    
+    logger.info("🔍 بدء تشخيص مشاكل الاتصال...")
+    
+    tests = {
+        "Telegram API": "https://api.telegram.org",
+        "Yahoo Finance": "https://finance.yahoo.com",
+        "Google": "https://www.google.com"
+    }
+    
+    results = []
+    
+    for name, url in tests.items():
+        try:
+            if PERSISTENT_SESSION:
+                response = PERSISTENT_SESSION.get(url, timeout=10)
+            else:
+                response = requests.get(url, timeout=10)
+                
+            if response.status_code == 200:
+                results.append(f"✅ {name}: متصل")
+            else:
+                results.append(f"⚠️ {name}: خطأ {response.status_code}")
+        except Exception as e:
+            results.append(f"❌ {name}: فشل ({str(e)})")
+    
+    # اختبار الاتصال بـ Telegram بشكل خاص
+    telegram_test = "❌ فشل اختبار Telegram"
+    try:
+        test_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe"
+        if PERSISTENT_SESSION:
+            response = PERSISTENT_SESSION.get(test_url, timeout=10)
+        else:
+            response = requests.get(test_url, timeout=10)
+            
+        if response.status_code == 200:
+            telegram_test = "✅ اتصال Telegram: ناجح"
+        else:
+            telegram_test = f"⚠️ اتصال Telegram: خطأ {response.status_code}"
+    except Exception as e:
+        telegram_test = f"❌ اتصال Telegram: فشل ({str(e)})"
+    
+    results.append(telegram_test)
+    
+    # إرسال نتائج التشخيص
+    diagnosis_message = "🔍 <b>تقرير تشخيص الاتصال</b>\n\n"
+    diagnosis_message += "\n".join(results)
+    diagnosis_message += f"\n\n🌐 البيئة: {'Render' if ON_RENDER else 'محلي'}"
+    
+    send_telegram_message(diagnosis_message)
+    return diagnosis_message
+
+def check_render_environment():
+    """التحقق من إعدادات Render المحددة"""
+    env_vars = {
+        "RENDER": os.environ.get('RENDER', 'غير مضبوط'),
+        "PORT": os.environ.get('PORT', 'غير مضبوط'),
+        "PYTHON_VERSION": os.environ.get('PYTHON_VERSION', 'غير مضبوط'),
+    }
+    
+    logger.info("🔍 التحقق من إعدادات Render:")
+    for key, value in env_vars.items():
+        logger.info(f"   {key}: {value}")
+    
+    return env_vars
 
 def calculate_rsi(prices, period=14):
     """حساب مؤشر RSI بشكل دقيق ومعالجة الأخطاء"""
@@ -149,6 +264,8 @@ def calculate_rsi(prices, period=14):
 
 def get_market_data(symbol):
     """جلب بيانات السوق مع معالجة الأخطاء"""
+    global PERSISTENT_SESSION
+    
     try:
         stock = yf.Ticker(symbol)
         hist = stock.history(period="1mo", interval="1d")
@@ -415,6 +532,12 @@ def get_current_prices():
     send_telegram_message(message)
     return "تم إرسال الأسعار الحالية"
 
+@app.route('/diagnose')
+def diagnose():
+    """مسار لتشخيص المشاكل"""
+    result = diagnose_connection_issues()
+    return f"<pre>{result}</pre>"
+
 # ========== معالجة الإشارات ==========
 def signal_handler(sig, frame):
     """معالجة إشارات النظام للتوقف"""
@@ -441,8 +564,13 @@ def run_web_server():
     app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 def main():
-    """الدالة الرئيسية المحدثة مع سجلات متقدمة ومراقبة"""
+    """الدالة الرئيسية المحدثة مع سجلالت متقدمة ومراقبة"""
+    global PERSISTENT_SESSION
+    
     try:
+        # إنشاء جلسة HTTP متواصلة
+        PERSISTENT_SESSION = create_persistent_session()
+        
         # بدء خادم الويب في خيط منفصل
         web_thread = threading.Thread(target=run_web_server, daemon=True)
         web_thread.start()
@@ -450,10 +578,27 @@ def main():
         # تسجيل بدء التشغيل
         start_time = datetime.now(DAMASCUS_TZ)
         logger.info("=" * 60)
-        logger.info("🚀 بدء تشغيل نظام التداول المتقدم على Render")
+        logger.info("🚀 بدء تشغيل نظام التداول المتقدم")
         logger.info(f"⏰ وقت البدء: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info(f"🌐 نوع التشغيل: {'Render' if ON_RENDER else 'Local'}")
         logger.info("=" * 60)
+        
+        # التحقق من إعدادات Render إذا كنا على Render
+        if ON_RENDER:
+            logger.info("🔍 التحقق من إعدادات Render...")
+            render_env = check_render_environment()
+            
+            # إرسال رسالة بدء تشغيل خاصة بـ Render
+            render_start_msg = f"""🚀 <b>بدء التشغيل على Render</b>
+⏰ الوقت: {start_time.strftime('%Y-%m-%d %H:%M:%S')}
+📊 الخدمة: Background Worker
+🌐 المنطقة: غير معروفة
+✅ جاري تهيئة النظام..."""
+
+            send_telegram_message(render_start_msg)
+            
+            # الانتظار قليلاً لضمان اكتمال التهيئة
+            time.sleep(3)
         
         # التحقق من صلاحية التوكن
         logger.info("🔍 التحقق من صلاحية توكن Telegram...")
@@ -598,5 +743,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
