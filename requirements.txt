@@ -1,0 +1,6 @@
+schedule
+yfinance
+numpy
+requests
+pytz
+python-telegram-bot
