@@ -11,9 +11,10 @@ from flask import Flask
 import threading
 import signal
 
-# ========== إعدادات الثوابت ==========
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', "7925838105:AAF5HwcXewyhrtyEi3_EF4r2p_R4Q5iMBfg")
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', "1467259305")
+
+# إعدادات Telegram - ضع هنا معلومات بوتك
+TELEGRAM_BOT_TOKEN = "8134471132:AAEdQo6TaKSEhB7BBmZ-Kl4K7IYookjNe0s"
+TELEGRAM_CHAT_ID = "1467259305"
 
 # تعريف الأصول التي تتابعها
 ASSETS = ["BTC-USD", "ETH-USD", "BNB-USD", "XRP-USD", "ADA-USD"]
@@ -597,4 +598,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
