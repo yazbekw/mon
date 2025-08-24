@@ -1,0 +1,7 @@
+services:
+  - type: worker
+    name: crypto-trading-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python btc.py
