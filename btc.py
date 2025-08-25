@@ -7,7 +7,7 @@ import requests
 import pytz
 import os
 import logging
-from flask import Flask
+from flask import Flask, request
 import threading
 import signal
 import pandas as pd
@@ -564,6 +564,139 @@ def monitor_and_recover():
             logger.error(f"❌ خطأ في المراقبة: {e}")
             time.sleep(60)
 
+def handle_telegram_command(command, chat_id):
+    """معالجة الأوامر الواردة من Telegram"""
+    command = command.lower().strip()
+    
+    if command == '/start' or command == '/help':
+        message = """🤖 <b>أوامر البوت المتاحة:</b>
+        
+/help - عرض هذه المساعدة
+/prices - الأسعار الحالية لجميع الأصول
+/analyze - تحليل فوري للسوق
+/status - حالة البوت والمعلومات
+/diagnose - تشخيص مشاكل الاتصال
+/btc - تحليل مفصل للبيتكوين
+/eth - تحليل مفصل للإيثيريوم
+/bnb - تحليل مفصل للـ BNB
+/xrp - تحليل مفصل للـ XRP
+/ada - تحليل مفصل للـ ADA
+        
+📊 <i>الإشعارات التلقائية تعمل كل 4 ساعات</i>"""
+        send_telegram_message(message)
+    
+    elif command == '/prices':
+        get_current_prices()
+    
+    elif command == '/analyze':
+        check_trading_opportunity()
+    
+    elif command == '/status':
+        check_bot_status()
+    
+    elif command == '/diagnose':
+        diagnose_connection_issues()
+    
+    elif command == '/btc':
+        analyze_specific_asset("BTC-USD")
+    
+    elif command == '/eth':
+        analyze_specific_asset("ETH-USD")
+    
+    elif command == '/bnb':
+        analyze_specific_asset("BNB-USD")
+    
+    elif command == '/xrp':
+        analyze_specific_asset("XRP-USD")
+    
+    elif command == '/ada':
+        analyze_specific_asset("ADA-USD")
+    
+    else:
+        send_telegram_message("⚠️ <b>أمر غير معروف</b>\n\nاكتب /help لرؤية الأوامر المتاحة")
+
+def analyze_specific_asset(symbol):
+    """تحليل مفصل لأصل معين"""
+    data = get_market_data(symbol)
+    
+    if all(x is not None for x in data[:3]):
+        price, rsi, change, ma_short, ma_long, support, resistance = data
+        
+        # الحصول على التوصية
+        rec_text, detailed_rec, rec_emoji, color_emoji = get_trading_recommendation(
+            price, rsi, ma_short, ma_long, support, resistance
+        )
+        
+        change_emoji = "📈" if change >= 0 else "📉"
+        change_sign = "+" if change >= 0 else ""
+        
+        message = f"🔍 <b>تحليل مفصل - {symbol}</b>\n\n"
+        message += f"{color_emoji} <b>السعر الحالي:</b> ${price:,.2f} {change_emoji} {change_sign}{change:.2f}%\n"
+        message += f"📊 <b>RSI:</b> {rsi:.1f} "
+        
+        # إضافة حالة RSI
+        if rsi < 30:
+            message += "(تشبع بيع 🔻)"
+        elif rsi < 40:
+            message += "(منخفض 🟡)"
+        elif rsi > 70:
+            message += "(تشبع شراء 🔺)"
+        elif rsi > 60:
+            message += "(مرتفع 🟠)"
+        else:
+            message += "(طبيعي ⚪)"
+        
+        message += f"\n\n📈 <b>المتوسطات المتحركة:</b>\n"
+        message += f"   • قصير المدى (20): ${ma_short:.2f}\n"
+        message += f"   • طويل المدى (50): ${ma_long:.2f}\n"
+        
+        if ma_short > ma_long:
+            message += f"   → <b>إيجابي</b> (القصير فوق الطويل) 🟢\n"
+        else:
+            message += f"   → <b>سلبي</b> (القصير تحت الطويل) 🔴\n"
+        
+        message += f"\n⚖️ <b>مستويات رئيسية:</b>\n"
+        message += f"   • الدعم: ${support:.2f}\n"
+        message += f"   • المقاومة: ${resistance:.2f}\n"
+        
+        # حساب المسافة للنسب المئوية
+        dist_to_support = ((price - support) / price) * 100
+        dist_to_resistance = ((resistance - price) / price) * 100
+        
+        message += f"   → {abs(dist_to_support):.1f}% من الدعم | {abs(dist_to_resistance):.1f}% من المقاومة\n"
+        
+        message += f"\n🎯 <b>التوصية:</b> {rec_text}\n"
+        message += f"📋 <b>التفاصيل:</b> {detailed_rec}\n"
+        
+        # إشارة تداول واضحة
+        if "شراء" in rec_text:
+            message += f"\n✅ <b>إشارة تداول: BUY</b> 🟢"
+        elif "بيع" in rec_text:
+            message += f"\n❌ <b>إشارة تداول: SELL</b> 🔴"
+        else:
+            message += f"\n⚠️ <b>إشارة تداول: HOLD</b> 🟡"
+        
+        send_telegram_message(message)
+    else:
+        send_telegram_message(f"⚠️ <b>لا توجد بيانات لـ {symbol}</b>\n\nجاري محاولة أخرى...")
+
+def setup_telegram_webhook():
+    """إعداد webhook لاستقبال الأوامر"""
+    webhook_url = f"https://https://mon-1.onrender.com/webhook"
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook?url={webhook_url}"
+    
+    try:
+        response = requests.get(url)
+        if response.status_code == 200:
+            logger.info("✅ تم إعداد webhook بنجاح")
+            return True
+        else:
+            logger.warning("⚠️ فشل إعداد webhook")
+            return False
+    except Exception as e:
+        logger.error(f"❌ خطأ في إعداد webhook: {e}")
+        return False
+
 def schedule_notifications():
     """جدولة جميع الإشعارات"""
     
@@ -630,6 +763,25 @@ def analyze_market():
     check_trading_opportunity()
     return "تم إجراء تحليل السوق وإرسال النتائج"
 
+@app.route('/webhook', methods=['POST'])
+def telegram_webhook():
+    """استقبال الأوامر من Telegram"""
+    try:
+        data = request.get_json()
+        
+        if 'message' in data and 'text' in data['message']:
+            chat_id = data['message']['chat']['id']
+            command = data['message']['text']
+            
+            # التحقق من أن الأمر من المستخدم المسموح
+            if str(chat_id) == TELEGRAM_CHAT_ID:
+                handle_telegram_command(command, chat_id)
+            
+        return 'OK'
+    except Exception as e:
+        logger.error(f"❌ خطأ في webhook: {e}")
+        return 'Error'
+
 # ========== معالجة الإشارات ==========
 def signal_handler(sig, frame):
     """معالجة إشارات النظام للتوقف"""
@@ -645,187 +797,80 @@ def signal_handler(sig, frame):
     
     exit(0)
 
-# تسجيل معالج الإشارات
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
-
-def run_web_server():
-    """تشغيل خادم الويب للـ health checks"""
-    port = int(os.environ.get('PORT', 5000))
-    logger.info(f"🌐 خادم الويب يعمل على port {port}")
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
-
+# ========== الدالة الرئيسية ==========
 def main():
-    """الدالة الرئيسية المحدثة مع سجلالت متقدمة ومراقبة"""
     global PERSISTENT_SESSION
     
-    try:
-        # إنشاء جلسة HTTP متواصلة
-        PERSISTENT_SESSION = create_persistent_session()
-        
-        # بدء خادم الويب في خيط منفصل
-        web_thread = threading.Thread(target=run_web_server, daemon=True)
-        web_thread.start()
-        
-        # تسجيل بدء التشغيل
-        start_time = datetime.now(DAMASCUS_TZ)
-        logger.info("=" * 60)
-        logger.info("🚀 بدء تشغيل نظام التداول المتقدم")
-        logger.info(f"⏰ وقت البدء: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info(f"🌐 نوع التشغيل: {'Render' if ON_RENDER else 'Local'}")
-        logger.info("📊 المؤشرات: RSI, المتوسطات المتحركة, الدعم/المقاومة")
-        logger.info("=" * 60)
-        
-        # التحقق من إعدادات Render إذا كنا على Render
-        if ON_RENDER:
-            logger.info("🔍 التحقق من إعدادات Render...")
-            render_env = check_render_environment()
-            
-            # إرسال رسالة بدء تشغيل خاصة بـ Render
-            render_start_msg = f"""🚀 <b>بدء التشغيل على Render</b>
-⏰ الوقت: {start_time.strftime('%Y-%m-%d %H:%M:%S')}
-📊 الخدمة: Background Worker
-🌐 المنطقة: غير معروفة
-📈 المؤشرات: RSI, المتوسطات المتحركة, الدعم/المقاومة
-✅ جاري تهيئة النظام..."""
-
-            send_telegram_message(render_start_msg)
-            
-            # الانتظار قليلاً لضمان اكتمال التهيئة
-            time.sleep(3)
-        
-        # التحقق من صلاحية التوكن
-        logger.info("🔍 التحقق من صلاحية توكن Telegram...")
-        if not verify_telegram_connection():
-            error_msg = """❌ <b>خطأ في توكن Telegram</b>
-⚠️ البوت لا يستطيع الاتصال
-🔍 الرجاء التحقق من:
-1. صحة التوكن
-2. صحة Chat ID
-3. أن البوت ليس محظوراً"""
-            send_telegram_message(error_msg)
-            return
-        
-        # إرسال إشعار بدء التشغيل
-        startup_msg = f"""🚀 <b>بدء تشغيل نظام التداول</b>
+    # تسجيل إشارات التوقف
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # إنشاء جلسة HTTP متواصلة
+    PERSISTENT_SESSION = create_persistent_session()
+    
+    # بدء البوت
+    start_time = datetime.now(DAMASCUS_TZ)
+    logger.info(f"🚀 بدء تشغيل البوت - {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    # التحقق من متغيرات البيئة
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.error("❌ لم يتم تعيين TELEGRAM_BOT_TOKEN أو TELEGRAM_CHAT_ID")
+        return
+    
+    # التحقق من اتصال Telegram
+    if not verify_telegram_connection():
+        logger.error("❌ فشل التحقق من توكن Telegram")
+        return
+    
+    # التحقق من إعدادات Render
+    render_env = check_render_environment()
+    
+    # إعداد webhook لاستقبال الأوامر
+    if ON_RENDER:
+        logger.info("🔧 جاري إعداد webhook للأوامر...")
+        setup_telegram_webhook()
+    
+    # إرسال رسالة بدء التشغيل
+    startup_msg = f"""🚀 <b>بدء تشغيل البوت</b>
 ⏰ الوقت: {start_time.strftime('%Y-%m-%d %H:%M:%S')}
 🌐 البيئة: {'Render' if ON_RENDER else 'محلي'}
-📊 الأصول: {len(ASSETS)} عملة
+📊 الأصول: {len(ASSETS)} عملة رقمية
 📈 المؤشرات: RSI, المتوسطات المتحركة, الدعم/المقاومة
-✅ الحالة: تم التفعيل بنجاح"""
-
-        send_telegram_message(startup_msg)
-        
-        # جدولة الإشعارات
-        logger.info("📅 جاري جدولة المهام...")
-        schedule_notifications()
-        
-        # بدء نظام المراقبة في خيط منفصل
-        monitor_thread = threading.Thread(target=monitor_and_recover, daemon=True)
-        monitor_thread.start()
-        logger.info("✅ نظام المراقبة يعمل")
-        
-        # عرض المهام المجدولة
-        logger.info("\n📋 المهام المجدولة:")
-        for job in schedule.jobs:
-            logger.info(f"   ⏰ {job.next_run.astimezone(DAMASCUS_TZ).strftime('%Y-%m-%d %H:%M')} - {job}")
-        
-        # إرسال تقرير الجدولة
-        schedule_report = f"""📅 <b>تقرير الجدولة</b>
-📊 تحليل السوق: كل 4 ساعات
-📈 التقرير اليومي: 20:00 يومياً
-📡 تقرير الحالة: كل 6 ساعات
-✅ تم جدولة جميع المهام"""
-
-        send_telegram_message(schedule_report)
-        
-        logger.info("\n" + "=" * 60)
-        logger.info("🎯 النظام يعمل بنجاح! الإشعارات مجدولة")
-        logger.info("⏰ سيتم إرسال الإشعارات تلقائياً حسب الأوقات المحددة")
-        logger.info("📊 لمراقبة السجلات: لوحة تحكم Render → Logs")
-        logger.info("=" * 60 + "\n")
-        
-        # إرسال رسالة تأكيد التشغيل
-        send_telegram_message("✅ <b>النظام يعمل بشكل طبيعي وجاهز للإشعارات</b>")
-        
-        # عداد لمراقبة أداء النظام
-        system_uptime = time.time()
-        error_count = 0
-        successful_cycles = 0
-        
-        # الحلقة الرئيسية مع مراقبة متقدمة
-        while True:
-            try:
-                current_time = datetime.now(DAMASCUS_TZ)
-                
-                # تشغيل المهام المجدولة
-                schedule.run_pending()
-                
-                # إرسال نبضة حياة كل ساعة (للمراقبة فقط)
-                if current_time.minute == 0 and current_time.second == 0:
-                    uptime_minutes = (time.time() - system_uptime) / 60
-                    status_msg = f"""❤️ <b>نبضة حياة - النظام يعمل</b>
-⏰ الوقت: {current_time.strftime('%H:%M:%S')}
-🔄 وقت التشغيل: {uptime_minutes:.1f} دقيقة
-✅ الدورات الناجحة: {successful_cycles}
-❌ الأخطاء: {error_count}
-📊 الحالة: ممتازة"""
-
-                    if ON_RENDER:  # إرسال النبضات فقط على Render
-                        send_telegram_message(status_msg)
-                
-                successful_cycles += 1
-                
-                # تقليل استهلاك الموارد على Render
-                time.sleep(30)  # انتظار 30 ثانية بين الدورات
-                
-            except KeyboardInterrupt:
-                # إيقاف يدوي
-                stop_time = datetime.now(DAMASCUS_TZ)
-                runtime = (stop_time - start_time)
-                
-                # إرسال الأسعار النهائية قبل التوقف
-                send_final_prices()
-                
-                # إرسال رسالة توقف
-                shutdown_msg = f"""⏹️ <b>إيقاف يدوي للنظام</b>
-⏰ وقت الإيقاف: {stop_time.strftime('%Y-%m-%d %H:%M:%S')}
-⏱️ مدة التشغيل: {runtime.days} أيام, {runtime.seconds//3600} ساعات
-📊 الدورات الناجحة: {successful_cycles}
-❌ الأخطاء: {error_count}"""
-
-                send_telegram_message(shutdown_msg)
-                break
-                
-            except Exception as e:
-                error_count += 1
-                logger.error(f"❌ خطأ في الحلقة الرئيسية: {e}")
-                
-                # إرسال تحذير بعد 5 أخطاء متتالية
-                if error_count % 5 == 0:
-                    error_msg = f"""⚠️ <b>تحذير: أخطاء متكررة</b>
-❌ عدد الأخطاء: {error_count}
-🔄 الدورات الناجحة: {successful_cycles}
-🔍 الخطأ: {str(e)}
-🛠️ جاري المحاولة مرة أخرى..."""
-
-                    send_telegram_message(error_msg)
-                
-                # الانتظار قبل المحاولة مرة أخرى
-                time.sleep(60)
+🔔 الإشعارات: كل 4 ساعات"""
+    send_telegram_message(startup_msg)
     
-    except Exception as e:
-        # معالجة الأخطاء غير المتوقعة
-        logger.critical(f"💥 خطأ غير متوقع: {e}")
-        
-        # إرسال رسالة خطأ نهائية
-        crash_time = datetime.now(DAMASCUS_TZ)
-        crash_msg = f"""💥 <b>تحطم النظام!</b>
-⏰ وقت التحطم: {crash_time.strftime('%Y-%m-%d %H:%M:%S')}
-❌ الخطأ: {str(e)}
-🛑 النظام متوقف"""
+    # جدولة المهام
+    schedule_notifications()
+    
+    # بدء مراقبة النظام في خلفية منفصلة
+    monitor_thread = threading.Thread(target=monitor_and_recover, daemon=True)
+    monitor_thread.start()
+    
+    # تشغيل المهام المجدولة
+    while True:
+        try:
+            schedule.run_pending()
+            time.sleep(1)
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            logger.error(f"❌ خطأ في تشغيل المهام: {e}")
+            time.sleep(60)
 
-        send_telegram_message(crash_msg)
-
+# ========== نقطة الدخول ==========
 if __name__ == "__main__":
+    # تشغيل خادم Flask في خيط منفصل إذا كنا على Render
+    if ON_RENDER:
+        flask_thread = threading.Thread(
+            target=lambda: app.run(
+                host='0.0.0.0',
+                port=int(os.environ.get('PORT', 5000)),
+                debug=False,
+                use_reloader=False
+            ),
+            daemon=True
+        )
+        flask_thread.start()
+    
+    # تشغيل البوت الرئيسي
     main()
