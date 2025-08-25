@@ -10,10 +10,11 @@ import logging
 from flask import Flask
 import threading
 import signal
+import pandas as pd
 
 # ========== إعدادات الثوابت ==========
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', "7925838105:AAF5HwcXewyhrtyEi3_EF4r2p_R4Q5iMBfg")
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', "1467259305")
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
 # تعريف الأصول التي تتابعها
 ASSETS = ["BTC-USD", "ETH-USD", "BNB-USD", "XRP-USD", "ADA-USD"]
@@ -25,25 +26,11 @@ DAMASCUS_TZ = pytz.timezone('Asia/Damascus')
 NOTIFICATION_COOLDOWN = 5  # 5 ثواني بين كل إشعارين
 MAX_INACTIVITY = 3600  # 1 ساعة كحد أقصى للخمول
 
-# ========== أوقات الشراء المثلى ==========
-BUY_TIMES = [
-    {"days": ["tuesday", "wednesday", "thursday"], "start": "01:00"},
-    {"days": ["tuesday", "wednesday", "thursday"], "start": "15:00"},
-    {"days": ["monday", "friday"], "start": "13:00"},
-    {"days": ["sunday", "saturday"], "start": "01:00"},
-    {"days": ["saturday"], "start": "16:00"}
-]
-
-# ========== أوقات البيع المثلى ==========
-SELL_TIMES = [
-    {"days": ["sunday", "monday"], "start": "17:00"},
-    {"days": ["monday"], "start": "00:00"},
-    {"days": ["monday"], "start": "07:00"},
-    {"days": ["friday"], "start": "00:00"},
-    {"days": ["friday"], "start": "05:00"},
-    {"days": ["saturday"], "start": "21:00"},
-    {"days": ["tuesday", "wednesday", "thursday"], "start": "08:00"}
-]
+# إعدادات المؤشرات التقنية
+RSI_PERIOD = 14
+MA_SHORT_PERIOD = 20
+MA_LONG_PERIOD = 50
+SUPPORT_RESISTANCE_PERIOD = 20
 
 # إعداد logging متقدم
 logging.basicConfig(
@@ -228,7 +215,7 @@ def check_render_environment():
     
     return env_vars
 
-def calculate_rsi(prices, period=14):
+def calculate_rsi(prices, period=RSI_PERIOD):
     """حساب مؤشر RSI بشكل دقيق ومعالجة الأخطاء"""
     if len(prices) < period + 1:
         return np.array([50] * len(prices))
@@ -262,61 +249,147 @@ def calculate_rsi(prices, period=14):
     
     return rsi
 
+def calculate_moving_averages(prices, short_period=MA_SHORT_PERIOD, long_period=MA_LONG_PERIOD):
+    """حساب المتوسطات المتحركة"""
+    if len(prices) < long_period:
+        return None, None
+    
+    ma_short = np.convolve(prices, np.ones(short_period)/short_period, mode='valid')
+    ma_long = np.convolve(prices, np.ones(long_period)/long_period, mode='valid')
+    
+    # جعل المصفوفات بنفس الطول
+    if len(ma_short) > len(ma_long):
+        ma_short = ma_short[-len(ma_long):]
+    elif len(ma_long) > len(ma_short):
+        ma_long = ma_long[-len(ma_short):]
+    
+    return ma_short, ma_long
+
+def calculate_support_resistance(prices, period=SUPPORT_RESISTANCE_PERIOD):
+    """حساب مستويات الدعم والمقاومة"""
+    if len(prices) < period:
+        return None, None
+    
+    # حساب الدعم والمقاومة باستخدام أعلى وأقل الأسعار في الفترة
+    support = np.min(prices[-period:])
+    resistance = np.max(prices[-period:])
+    
+    return support, resistance
+
 def get_market_data(symbol):
     """جلب بيانات السوق مع معالجة الأخطاء"""
     global PERSISTENT_SESSION
     
     try:
         stock = yf.Ticker(symbol)
-        hist = stock.history(period="1mo", interval="1d")
+        hist = stock.history(period="2mo", interval="1d")  # زيادة الفترة للحصول على بيانات كافية
         
-        if len(hist) < 15:
+        if len(hist) < max(RSI_PERIOD, MA_LONG_PERIOD, SUPPORT_RESISTANCE_PERIOD) + 1:
             logger.warning(f"⚠️ بيانات غير كافية لـ {symbol}")
-            return None, None, None
+            return None, None, None, None, None, None, None
             
         current_price = hist['Close'].iloc[-1]
         rsi_values = calculate_rsi(hist['Close'].values)
-        current_rsi = rsi_values[-1]
+        current_rsi = rsi_values[-1] if len(rsi_values) > 0 else 50
+        
+        # حساب المتوسطات المتحركة
+        ma_short, ma_long = calculate_moving_averages(hist['Close'].values)
+        current_ma_short = ma_short[-1] if ma_short is not None and len(ma_short) > 0 else current_price
+        current_ma_long = ma_long[-1] if ma_long is not None and len(ma_long) > 0 else current_price
+        
+        # حساب الدعم والمقاومة
+        support, resistance = calculate_support_resistance(hist['Close'].values)
         
         # سعر الأمس للتغيير
         prev_price = hist['Close'].iloc[-2] if len(hist) > 1 else current_price
         price_change = ((current_price - prev_price) / prev_price) * 100
         
-        return current_price, current_rsi, price_change
+        return current_price, current_rsi, price_change, current_ma_short, current_ma_long, support, resistance
         
     except Exception as e:
         logger.error(f"❌ خطأ في جلب بيانات {symbol}: {e}")
-        return None, None, None
+        return None, None, None, None, None, None, None
 
-def get_rsi_recommendation(rsi, is_buy_time):
-    """الحصول على توصية بناءً على RSI"""
-    if is_buy_time:
-        if rsi < 30:
-            return "إشارة شراء قوية جداً", "🎯", "🟢"
-        elif rsi < 35:
-            return "إشارة شراء قوية", "👍", "🟢"
-        elif rsi < 40:
-            return "إشارة شراء جيدة", "📈", "🟡"
-        else:
-            return "تجنب الشراء (RSI مرتفع)", "⚠️", "🔴"
-    else:
-        if rsi > 70:
-            return "إشارة بيع قوية جداً", "🎯", "🟢"
-        elif rsi > 65:
-            return "إشارة بيع قوية", "👍", "🟢"
-        elif rsi > 60:
-            return "إشارة بيع جيدة", "📈", "🟡"
-        else:
-            return "تجنب البيع (RSI منخفض)", "⚠️", "🔴"
-
-def check_trading_opportunity(is_buy_time):
-    """فحص فرص التداول وإرسال الإشعارات"""
-    action = "شراء" if is_buy_time else "بيع"
-    action_emoji = "🟢" if is_buy_time else "🔴"
+def get_trading_recommendation(price, rsi, ma_short, ma_long, support, resistance):
+    """الحصول على توصية تداول بناءً على مؤشرات متعددة"""
+    recommendations = []
+    signals = []
+    emojis = []
     
+    # تحليل RSI
+    if rsi < 30:
+        recommendations.append("إشارة شراء قوية (RSI منخفض)")
+        signals.append("شراء")
+        emojis.append("🟢")
+    elif rsi < 40:
+        recommendations.append("إشارة شراء جيدة (RSI منخفض)")
+        signals.append("شراء")
+        emojis.append("🟡")
+    elif rsi > 70:
+        recommendations.append("إشارة بيع قوية (RSI مرتفع)")
+        signals.append("بيع")
+        emojis.append("🔴")
+    elif rsi > 60:
+        recommendations.append("إشارة بيع جيدة (RSI مرتفع)")
+        signals.append("بيع")
+        emojis.append("🟠")
+    else:
+        recommendations.append("RSI في منطقة محايدة")
+        signals.append("محايد")
+        emojis.append("⚪")
+    
+    # تحليل المتوسطات المتحركة
+    if ma_short is not None and ma_long is not None:
+        if ma_short > ma_long:
+            recommendations.append("المتوسط القصير فوق الطويل (إيجابي)")
+            signals.append("شراء")
+            emojis.append("🟢")
+        else:
+            recommendations.append("المتوسط القصير تحت الطويل (سلبي)")
+            signals.append("بيع")
+            emojis.append("🔴")
+    
+    # تحليل الدعم والمقاومة
+    if support is not None and resistance is not None:
+        distance_to_support = abs(price - support) / price * 100
+        distance_to_resistance = abs(price - resistance) / price * 100
+        
+        if distance_to_support < 2:  # قريب من الدعم
+            recommendations.append("السعر قريب من مستوى الدعم")
+            signals.append("شراء")
+            emojis.append("🟢")
+        elif distance_to_resistance < 2:  # قريب من المقاومة
+            recommendations.append("السعر قريب من مستوى المقاومة")
+            signals.append("بيع")
+            emojis.append("🔴")
+    
+    # تحديد التوصية النهائية بناءً على الإشارات
+    buy_signals = signals.count("شراء")
+    sell_signals = signals.count("بيع")
+    
+    if buy_signals > sell_signals:
+        final_recommendation = "توصية شراء"
+        final_emoji = "🎯"
+        final_color = "🟢"
+    elif sell_signals > buy_signals:
+        final_recommendation = "توصية بيع"
+        final_emoji = "🎯"
+        final_color = "🔴"
+    else:
+        final_recommendation = "محايد - الانتظار"
+        final_emoji = "⚠️"
+        final_color = "🟡"
+    
+    # تجميع التوصيات
+    detailed_recommendation = " | ".join(recommendations)
+    
+    return final_recommendation, detailed_recommendation, final_emoji, final_color
+
+def check_trading_opportunity():
+    """فحص فرص التداول وإرسال الإشعارات"""
     current_time = datetime.now(DAMASCUS_TZ).strftime("%Y-%m-%d %H:%M")
     
-    message = f"{action_emoji} <b>إشعار تداول - وقت {action}</b>\n"
+    message = f"📊 <b>تحليل السوق الشامل</b>\n"
     message += f"⏰ <i>{current_time}</i>\n"
     message += "─" * 30 + "\n\n"
     
@@ -324,17 +397,29 @@ def check_trading_opportunity(is_buy_time):
     
     for symbol in ASSETS:
         data = get_market_data(symbol)
-        if all(x is not None for x in data):
-            price, rsi, change = data
+        if all(x is not None for x in data[:3]):  # التحقق من البيانات الأساسية على الأقل
+            price, rsi, change, ma_short, ma_long, support, resistance = data
             assets_analyzed += 1
             
-            rec_text, rec_emoji, color_emoji = get_rsi_recommendation(rsi, is_buy_time)
+            # الحصول على التوصية
+            rec_text, detailed_rec, rec_emoji, color_emoji = get_trading_recommendation(
+                price, rsi, ma_short, ma_long, support, resistance
+            )
+            
             change_emoji = "📈" if change >= 0 else "📉"
             change_sign = "+" if change >= 0 else ""
             
             message += f"{color_emoji} <b>{symbol}</b>\n"
             message += f"💰 السعر: ${price:,.2f} {change_emoji} {change_sign}{change:.2f}%\n"
-            message += f"📊 RSI: {rsi:.1f} - {rec_emoji} {rec_text}\n"
+            message += f"📊 RSI: {rsi:.1f}\n"
+            
+            if ma_short is not None and ma_long is not None:
+                message += f"📈 المتوسطات: {ma_short:.2f} / {ma_long:.2f}\n"
+            
+            if support is not None and resistance is not None:
+                message += f"⚖️ الدعم/المقاومة: {support:.2f} / {resistance:.2f}\n"
+            
+            message += f"🎯 {rec_text}: {detailed_rec}\n"
             message += "─" * 20 + "\n"
     
     if assets_analyzed > 0:
@@ -364,19 +449,21 @@ def send_daily_report():
     
     for symbol in ASSETS:
         data = get_market_data(symbol)
-        if all(x is not None for x in data):
-            price, rsi, change = data
+        if all(x is not None for x in data[:3]):  # التحقق من البيانات الأساسية على الأقل
+            price, rsi, change, ma_short, ma_long, support, resistance = data
             assets_analyzed += 1
             
-            status = "🟢 منخفض" if rsi < 35 else "🔴 مرتفع" if rsi > 65 else "🟡 متعادل"
+            # الحصول على التوصية المختصرة
+            rec_text, _, _, color_emoji = get_trading_recommendation(
+                price, rsi, ma_short, ma_long, support, resistance
+            )
+            
             change_emoji = "📈" if change >= 0 else "📉"
             
-            message += f"• {status} <b>{symbol}</b>: ${price:,.2f} {change_emoji}\n"
+            message += f"• {color_emoji} <b>{symbol}</b>: ${price:,.2f} {change_emoji} - {rec_text}\n"
     
     if assets_analyzed > 0:
-        message += f"\n📈 RSI < 35: فرصة شراء\n"
-        message += f"📉 RSI > 65: فرصة بيع\n"
-        message += f"📋 {assets_analyzed} أصل تم تحليله"
+        message += f"\n📋 <i>تم تحليل {assets_analyzed} أصل</i>"
         
         send_telegram_message(message)
     else:
@@ -394,8 +481,8 @@ def send_final_prices():
     
     for symbol in ASSETS:
         data = get_market_data(symbol)
-        if all(x is not None for x in data):
-            price, rsi, change = data
+        if all(x is not None for x in data[:3]):  # التحقق من البيانات الأساسية على الأقل
+            price, rsi, change, ma_short, ma_long, support, resistance = data
             assets_analyzed += 1
             
             change_emoji = "📈" if change >= 0 else "📉"
@@ -404,6 +491,13 @@ def send_final_prices():
             message += f"💰 <b>{symbol}</b>\n"
             message += f"   السعر: ${price:,.2f} {change_emoji} {change_sign}{change:.2f}%\n"
             message += f"   RSI: {rsi:.1f}\n"
+            
+            if ma_short is not None and ma_long is not None:
+                message += f"   المتوسطات: {ma_short:.2f} / {ma_long:.2f}\n"
+            
+            if support is not None and resistance is not None:
+                message += f"   الدعم/المقاومة: {support:.2f} / {resistance:.2f}\n"
+            
             message += "─" * 20 + "\n"
     
     if assets_analyzed > 0:
@@ -431,13 +525,14 @@ def check_bot_status():
     
     # إضافة معلومات إضافية
     status_message += f"\n📋 الأصول: {len(ASSETS)} عملة"
+    status_message += f"\n📊 المؤشرات: RSI, المتوسطات المتحركة, الدعم/المقاومة"
     
     # الحصول على وقت الإشعار التالي
     next_job = schedule.next_run()
     if next_job:
-        status_message += f"\n⏰下次 إشعار: {next_job.astimezone(DAMASCUS_TZ).strftime('%Y-%m-%d %H:%M')}"
+        status_message += f"\n⏰ الإشعار القادم: {next_job.astimezone(DAMASCUS_TZ).strftime('%Y-%m-%d %H:%M')}"
     else:
-        status_message += "\n⏰下次 إشعار: لا يوجد"
+        status_message += "\n⏰ الإشعار القادم: لا يوجد"
     
     send_telegram_message(status_message)
 
@@ -472,20 +567,9 @@ def monitor_and_recover():
 def schedule_notifications():
     """جدولة جميع الإشعارات"""
     
-    # جدولة أوقات الشراء
-    for time_slot in BUY_TIMES:
-        for day in time_slot["days"]:
-            getattr(schedule.every(), day).at(time_slot["start"]).do(
-                lambda: check_trading_opportunity(True)
-            )
-
-    # جدولة أوقات البيع
-    for time_slot in SELL_TIMES:
-        for day in time_slot["days"]:
-            getattr(schedule.every(), day).at(time_slot["start"]).do(
-                lambda: check_trading_opportunity(False)
-            )
-
+    # جدولة تحليل السوق كل 4 ساعات
+    schedule.every(4).hours.do(check_trading_opportunity)
+    
     # تقرير يومي الساعة 8 مساءً
     schedule.every().day.at("20:00").do(send_daily_report)
     
@@ -499,6 +583,7 @@ def home():
     <h1>✅ Crypto Trading Bot is Running</h1>
     <p>Service: Active</p>
     <p>Type: Background Worker + Health Check</p>
+    <p>Indicators: RSI, Moving Averages, Support/Resistance</p>
     '''
 
 @app.route('/health')
@@ -507,7 +592,8 @@ def health():
         'status': 'healthy',
         'service': 'crypto-trading-bot',
         'timestamp': datetime.now(DAMASCUS_TZ).isoformat(),
-        'assets': ASSETS
+        'assets': ASSETS,
+        'indicators': ['RSI', 'Moving Averages', 'Support/Resistance']
     }
 
 @app.route('/test')
@@ -523,8 +609,8 @@ def get_current_prices():
     message = "📊 <b>الأسعار الحالية</b>\n\n"
     for symbol in ASSETS:
         data = get_market_data(symbol)
-        if all(x is not None for x in data):
-            price, rsi, change = data
+        if all(x is not None for x in data[:3]):  # التحقق من البيانات الأساسية على الأقل
+            price, rsi, change, ma_short, ma_long, support, resistance = data
             change_emoji = "📈" if change >= 0 else "📉"
             change_sign = "+" if change >= 0 else ""
             message += f"• {symbol}: ${price:,.2f} {change_emoji} {change_sign}{change:.2f}%\n"
@@ -537,6 +623,12 @@ def diagnose():
     """مسار لتشخيص المشاكل"""
     result = diagnose_connection_issues()
     return f"<pre>{result}</pre>"
+
+@app.route('/analyze')
+def analyze_market():
+    """مسار لتحليل السوق فوراً"""
+    check_trading_opportunity()
+    return "تم إجراء تحليل السوق وإرسال النتائج"
 
 # ========== معالجة الإشارات ==========
 def signal_handler(sig, frame):
@@ -581,6 +673,7 @@ def main():
         logger.info("🚀 بدء تشغيل نظام التداول المتقدم")
         logger.info(f"⏰ وقت البدء: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info(f"🌐 نوع التشغيل: {'Render' if ON_RENDER else 'Local'}")
+        logger.info("📊 المؤشرات: RSI, المتوسطات المتحركة, الدعم/المقاومة")
         logger.info("=" * 60)
         
         # التحقق من إعدادات Render إذا كنا على Render
@@ -593,6 +686,7 @@ def main():
 ⏰ الوقت: {start_time.strftime('%Y-%m-%d %H:%M:%S')}
 📊 الخدمة: Background Worker
 🌐 المنطقة: غير معروفة
+📈 المؤشرات: RSI, المتوسطات المتحركة, الدعم/المقاومة
 ✅ جاري تهيئة النظام..."""
 
             send_telegram_message(render_start_msg)
@@ -617,6 +711,7 @@ def main():
 ⏰ الوقت: {start_time.strftime('%Y-%m-%d %H:%M:%S')}
 🌐 البيئة: {'Render' if ON_RENDER else 'محلي'}
 📊 الأصول: {len(ASSETS)} عملة
+📈 المؤشرات: RSI, المتوسطات المتحركة, الدعم/المقاومة
 ✅ الحالة: تم التفعيل بنجاح"""
 
         send_telegram_message(startup_msg)
@@ -637,9 +732,8 @@ def main():
         
         # إرسال تقرير الجدولة
         schedule_report = f"""📅 <b>تقرير الجدولة</b>
-🛒 أوقات الشراء: {len(BUY_TIMES)} فترة
-💰 أوقات البيع: {len(SELL_TIMES)} فترة
-📊 التقرير اليومي: 20:00 يومياً
+📊 تحليل السوق: كل 4 ساعات
+📈 التقرير اليومي: 20:00 يومياً
 📡 تقرير الحالة: كل 6 ساعات
 ✅ تم جدولة جميع المهام"""
 
@@ -693,53 +787,45 @@ def main():
                 # إرسال الأسعار النهائية قبل التوقف
                 send_final_prices()
                 
-                shutdown_msg = f"""⏹️ <b>إيقاف النظام يدوياً</b>
-⏰ وقت البدء: {start_time.strftime('%Y-%m-%d %H:%M')}
-⏰ وقت الإيقاف: {stop_time.strftime('%Y-%m-%d %H:%M')}
-⏱️ مدة التشغيل: {runtime}
-✅ الدورات الناجحة: {successful_cycles}
+                # إرسال رسالة توقف
+                shutdown_msg = f"""⏹️ <b>إيقاف يدوي للنظام</b>
+⏰ وقت الإيقاف: {stop_time.strftime('%Y-%m-%d %H:%M:%S')}
+⏱️ مدة التشغيل: {runtime.days} أيام, {runtime.seconds//3600} ساعات
+📊 الدورات الناجحة: {successful_cycles}
 ❌ الأخطاء: {error_count}"""
 
                 send_telegram_message(shutdown_msg)
-                logger.info("\n⏹️ تم إيقاف النظام يدوياً")
                 break
                 
             except Exception as e:
                 error_count += 1
-                error_time = datetime.now(DAMASCUS_TZ)
+                logger.error(f"❌ خطأ في الحلقة الرئيسية: {e}")
                 
-                logger.error(f"❌ خطأ في الدورة الرئيسية: {e}")
-                logger.error(f"⏰ وقت الخطأ: {error_time.strftime('%Y-%m-%d %H:%M:%S')}")
-                
-                # إرسال إشعار خطأ فقط إذا كانت الأخطاء متتالية
+                # إرسال تحذير بعد 5 أخطاء متتالية
                 if error_count % 5 == 0:
-                    error_msg = f"""⚠️ <b>تحذير: أخطاء متعددة</b>
-⏰ الوقت: {error_time.strftime('%H:%M:%S')}
+                    error_msg = f"""⚠️ <b>تحذير: أخطاء متكررة</b>
 ❌ عدد الأخطاء: {error_count}
-📋 آخر خطأ: {str(e)[:100]}...
-🔄 النظام يستمر في المحاولة"""
+🔄 الدورات الناجحة: {successful_cycles}
+🔍 الخطأ: {str(e)}
+🛠️ جاري المحاولة مرة أخرى..."""
 
                     send_telegram_message(error_msg)
                 
-                # انتظار أطول بين المحاولات عند الأخطاء
+                # الانتظار قبل المحاولة مرة أخرى
                 time.sleep(60)
-                
+    
     except Exception as e:
-        # خطأ فادح في بدء التشغيل
+        # معالجة الأخطاء غير المتوقعة
+        logger.critical(f"💥 خطأ غير متوقع: {e}")
+        
+        # إرسال رسالة خطأ نهائية
         crash_time = datetime.now(DAMASCUS_TZ)
-        crash_msg = f"""💥 <b>خطأ فادح في النظام</b>
-⏰ الوقت: {crash_time.strftime('%Y-%m-%d %H:%M:%S')}
-📋 الخطأ: {str(e)}
-❌ النظام توقف"""
+        crash_msg = f"""💥 <b>تحطم النظام!</b>
+⏰ وقت التحطم: {crash_time.strftime('%Y-%m-%d %H:%M:%S')}
+❌ الخطأ: {str(e)}
+🛑 النظام متوقف"""
 
         send_telegram_message(crash_msg)
-        logger.error(f"💥 خطأ فادح: {e}")
-        
-        if ON_RENDER:
-            # على Render، نعيد المحاولة بعد 5 دقائق
-            logger.info("🔄 إعادة المحاولة بعد 5 دقائق...")
-            time.sleep(300)
-            main()
 
 if __name__ == "__main__":
     main()
