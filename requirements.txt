@@ -1,7 +1,0 @@
-schedule
-yfinance
-numpy
-requests
-pytz
-flask
-gunicorn
