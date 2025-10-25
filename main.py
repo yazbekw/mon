@@ -55,30 +55,45 @@ async def main():
     """الدالة الرئيسية لتشغيل النظام المتكامل"""
     logger.info("🚀 بدء تشغيل نظام مدير الصفقات التلقائي")
     
+    # تعريف المتغيرات خارج try block لتجنب referenced before assignment
+    trade_manager = None
+    binance_engine = None
+    risk_engine = None
+    notification_manager = None
+    
     try:
-        # تهيئة المكونات
+        # 1. تهيئة محرك Binance أولاً
+        logger.info("🔧 تهيئة محرك Binance...")
         binance_engine = BinanceEngine(APP_CONFIG['binance'])
-        risk_engine = RiskEngine(APP_CONFIG['risk'], binance_engine)
-        notification_manager = NotificationManager(APP_CONFIG['notifications'])
+        if not await binance_engine.initialize():
+            logger.error("❌ فشل تهيئة محرك Binance")
+            return
         
-        # إنشاء مدير الصفقات الرئيسي
+        # 2. تهيئة محرك المخاطرة مع تمرير binance_engine (الإصلاح الرئيسي)
+        logger.info("🔧 تهيئة محرك المخاطرة...")
+        risk_engine = RiskEngine(APP_CONFIG['risk'], binance_engine)
+        
+        # 3. تهيئة مدير الإشعارات
+        logger.info("🔧 تهيئة مدير الإشعارات...")
+        notification_manager = NotificationManager(APP_CONFIG['notifications'])
+        await notification_manager.initialize()
+        
+        # 4. إنشاء مدير الصفقات الرئيسي
+        logger.info("🔧 تهيئة مدير الصفقات...")
         trade_manager = TradeManager(APP_CONFIG)
         
-        # حقن التبعيات
+        # 5. حقن التبعيات في trade_manager
         trade_manager.binance = binance_engine
         trade_manager.risk = risk_engine
         trade_manager.notifier = notification_manager
         
-        # تهيئة المكونات
-        await binance_engine.initialize()
-        await notification_manager.initialize()
-        
-        # بدء النظام
+        # 6. بدء النظام
+        logger.info("🚀 بدء تشغيل النظام...")
         await trade_manager.start()
         
         logger.info("✅ تم بدء جميع مكونات النظام بنجاح")
         
-        # البقاء في حالة تشغيل
+        # 7. البقاء في حالة تشغيل
         while trade_manager.is_running:
             await asyncio.sleep(1)
             
@@ -87,13 +102,25 @@ async def main():
     except Exception as e:
         logger.error(f"❌ خطأ غير متوقع: {e}")
     finally:
-        # التنظيف
+        # 8. التنظيف الآمن - جميع المتغيرات معرفة خارج try block
+        logger.info("🧹 تنظيف الموارد...")
         try:
-            await trade_manager.stop()
-            await binance_engine.close()
-            await notification_manager.close()
+            if trade_manager:
+                await trade_manager.stop()
         except Exception as e:
-            logger.error(f"❌ خطأ أثناء التنظيف: {e}")
+            logger.error(f"❌ خطأ في إيقاف trade_manager: {e}")
+        
+        try:
+            if binance_engine:
+                await binance_engine.close()
+        except Exception as e:
+            logger.error(f"❌ خطأ في إغلاق binance_engine: {e}")
+        
+        try:
+            if notification_manager:
+                await notification_manager.close()
+        except Exception as e:
+            logger.error(f"❌ خطأ في إغلاق notification_manager: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
