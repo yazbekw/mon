@@ -55,7 +55,7 @@ async def main():
     """الدالة الرئيسية لتشغيل النظام المتكامل"""
     logger.info("🚀 بدء تشغيل نظام مدير الصفقات التلقائي")
     
-    # تعريف المتغيرات خارج try block لتجنب referenced before assignment
+    # تعريف المتغيرات خارج try block
     trade_manager = None
     binance_engine = None
     risk_engine = None
@@ -69,31 +69,36 @@ async def main():
             logger.error("❌ فشل تهيئة محرك Binance")
             return
         
-        # 2. تهيئة محرك المخاطرة مع تمرير binance_engine (الإصلاح الرئيسي)
+        # 2. اختبار اتصال Binance
+        if not await binance_engine.test_connection():
+            logger.error("❌ فشل اختبار اتصال Binance")
+            return
+
+        # 3. تهيئة محرك المخاطرة مع تمرير binance_engine
         logger.info("🔧 تهيئة محرك المخاطرة...")
-        risk_engine = RiskEngine(APP_CONFIG['risk'], binance_engine)
+        risk_engine = RiskEngine(config=APP_CONFIG['risk'], binance_engine=binance_engine)
         
-        # 3. تهيئة مدير الإشعارات
+        # 4. تهيئة مدير الإشعارات
         logger.info("🔧 تهيئة مدير الإشعارات...")
         notification_manager = NotificationManager(APP_CONFIG['notifications'])
         await notification_manager.initialize()
         
-        # 4. إنشاء مدير الصفقات الرئيسي
+        # 5. إنشاء مدير الصفقات الرئيسي
         logger.info("🔧 تهيئة مدير الصفقات...")
         trade_manager = TradeManager(APP_CONFIG)
         
-        # 5. حقن التبعيات في trade_manager
+        # 6. حقن التبعيات في trade_manager
         trade_manager.binance = binance_engine
         trade_manager.risk = risk_engine
         trade_manager.notifier = notification_manager
         
-        # 6. بدء النظام
+        # 7. بدء النظام
         logger.info("🚀 بدء تشغيل النظام...")
         await trade_manager.start()
         
         logger.info("✅ تم بدء جميع مكونات النظام بنجاح")
         
-        # 7. البقاء في حالة تشغيل
+        # 8. البقاء في حالة تشغيل
         while trade_manager.is_running:
             await asyncio.sleep(1)
             
@@ -102,7 +107,7 @@ async def main():
     except Exception as e:
         logger.error(f"❌ خطأ غير متوقع: {e}")
     finally:
-        # 8. التنظيف الآمن - جميع المتغيرات معرفة خارج try block
+        # 9. التنظيف الآمن
         logger.info("🧹 تنظيف الموارد...")
         try:
             if trade_manager:
