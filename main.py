@@ -1,13 +1,10 @@
-import asyncio
+import os
 import logging
 import time
 import requests
-import hmac
-import hashlib
 import json
-import os
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from datetime import datetime
+from typing import Dict, List, Tuple
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 from flask import Flask, jsonify, request
